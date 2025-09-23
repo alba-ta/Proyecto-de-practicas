@@ -1,0 +1,207 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "GLPI API",
+    "description": "GLPI High-level API documentation.",
+    "version": "1.0.0"
+  },
+  "servers": [
+    {
+      "url": "https://glpi-network.cloud/api.php",
+      "description": "Production server"
+    }
+  ],
+  "tags": [
+    {
+      "name": "User",
+      "description": "User management and related operations."
+    },
+    {
+      "name": "Ticket",
+      "description": "Ticket management and related operations."
+    },
+    {
+      "name": "Computer",
+      "description": "Computer management and related operations."
+    }
+  ],
+  "paths": {
+    "/User": {
+      "get": {
+        "tags": [
+          "User"
+        ],
+        "summary": "Get all users",
+        "operationId": "getUsers",
+        "parameters": [
+          {
+            "name": "search",
+            "in": "query",
+            "description": "Search users by name, first name, username...",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A list of users",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/User"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/User/{id}": {
+      "get": {
+        "tags": [
+          "User"
+        ],
+        "summary": "Get a user by ID",
+        "operationId": "getUserById",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "ID of the user to get",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A single user",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/User"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "User not found"
+          }
+        }
+      }
+    },
+    "/Ticket": {
+      "get": {
+        "tags": [
+          "Ticket"
+        ],
+        "summary": "Get all tickets",
+        "operationId": "getTickets",
+        "responses": {
+          "200": {
+            "description": "A list of tickets",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Ticket"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/Computer": {
+      "get": {
+        "tags": [
+          "Computer"
+        ],
+        "summary": "Get all computers",
+        "operationId": "getComputers",
+        "responses": {
+          "200": {
+            "description": "A list of computers",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Computer"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "User": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "The user's unique ID."
+          },
+          "name": {
+            "type": "string",
+            "description": "The user's full name."
+          },
+          "username": {
+            "type": "string",
+            "description": "The user's username."
+          },
+          "email": {
+            "type": "string",
+            "format": "email",
+            "description": "The user's email address."
+          }
+        }
+      },
+      "Ticket": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "The ticket's unique ID."
+          },
+          "name": {
+            "type": "string",
+            "description": "The ticket's title."
+          },
+          "status": {
+            "type": "integer",
+            "description": "The ticket's status ID."
+          }
+        }
+      },
+      "Computer": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "The computer's unique ID."
+          },
+          "name": {
+            "type": "string",
+            "description": "The computer's name."
+          },
+          "serial": {
+            "type": "string",
+            "description": "The computer's serial number."
+          }
+        }
+      }
+    }
+  }
+}
