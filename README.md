@@ -1,2 +1,2 @@
 # Proyecto de Prácticas: EMPRESA -->  FIRECHIP 
-Este repositorio contiene el proyecto de prácticas del curso ocupacional de Programación Prentada a objetos
+Este repositorio contiene el proyecto de prácticas del curso ocupacional de Programación Orientada a objetos
