@@ -1,3 +1,5 @@
-En la fase 1 tenemso los edpoints siguientes:
+𝙁𝘼𝙎𝙀 𝟭 
+En la fase 1 nos centraremos en los items 
+Tenemos los edpoints siguientes:
 -Apply massive action
 -Add item(s)
