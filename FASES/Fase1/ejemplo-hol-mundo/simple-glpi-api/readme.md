@@ -11,3 +11,7 @@ Tenemos los edpoints siguientes:
 -Update item(s)
 
 -update item(s)
+
+
+𝙄𝙈𝙋𝙊𝙍𝙏𝘼𝙉𝙏𝙀:
+Hay dos servers.js una exclusivamente con  tabla de computers , creada para hacer pruebas .El otro server.js es el  generico.
