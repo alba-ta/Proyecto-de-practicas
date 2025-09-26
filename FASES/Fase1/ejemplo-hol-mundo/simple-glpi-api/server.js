@@ -26,8 +26,8 @@ const pool = mysql.createConnection({
 // ------------------------------------------------------------------
 
 /**
- * LÓGICA DE CREACIÓN: Inserta un nuevo registro Computer.
- */
+ * LÓGICA DE CREACIÓN: Inserta un nuevo registro Computer.
+ */
 function insertSingleComputer(computer) {
     const { name, serial } = computer;
     return pool.then(connection => {
@@ -40,8 +40,8 @@ function insertSingleComputer(computer) {
 }
 
 /**
- * LÓGICA DE ACTUALIZACIÓN: Actualiza un registro Computer por ID (Usado por PUT/PATCH).
- */
+ * LÓGICA DE ACTUALIZACIÓN: Actualiza un registro Computer por ID (Usado por PUT/PATCH).
+ */
 async function updateComputerById(id, input) {
     // Para simplificar, actualiza 'name' o 'otherserial' (simulando campos)
     const newName = input.name || input.otherserial; 
@@ -64,8 +64,8 @@ async function updateComputerById(id, input) {
 }
 
 /**
- * LÓGICA DE ACCIÓN MASIVA: Actualiza un registro por ID (Usado por POST Massive Action).
- */
+ * LÓGICA DE ACCIÓN MASIVA: Actualiza un registro por ID (Usado por POST Massive Action).
+ */
 async function applyUpdateAction(id, input) {
     // SIMULACIÓN: Usa el parámetro 'amendment' para actualizar el 'name'.
     const newName = input.amendment; 
@@ -81,6 +81,24 @@ async function applyUpdateAction(id, input) {
     } catch (error) {
         throw error;
     }
+}
+
+/**
+ * LÓGICA DE ELIMINACIÓN: Elimina un registro Computer por ID (Usado por DELETE).
+ * **ESTA ES LA NUEVA FUNCIÓN**
+ */
+async function deleteComputerById(id, forcePurge = false) {
+    const connection = await pool;
+
+    try {
+        const [result] = await connection.execute(
+            'DELETE FROM Computer WHERE id = ?',
+            [id]
+        );
+        return result.affectedRows > 0;
+    } catch (error) {
+        throw error;
+    }
 }
 
 
@@ -212,26 +230,26 @@ app.post('/apirest.php/applyMassiveAction/:itemtype/:action', async (req, res) =
 
 // 3a. ACTUALIZACIÓN INDIVIDUAL (ID viene en la URL) o BULK (ID viene en el Body)
 app.put('/apirest.php/:itemtype/:id', async (req, res) => {
-    // Aquí usamos una función interna que hemos extraído para evitar código duplicado.
-    await handlePutRequest(req, res);
+    // Aquí usamos una función interna que hemos extraído para evitar código duplicado.
+    await handlePutRequest(req, res);
 });
 
 // 3b. ACTUALIZACIÓN BULK (El ID viene en el Body JSON del array, la URL no tiene ID)
 app.put('/apirest.php/:itemtype', async (req, res) => {
-    // Ambos endpoints llaman a la misma lógica principal, ya que el código dentro
-    // maneja si 'id' viene de la URL o del Body.
-    await handlePutRequest(req, res);
+    // Ambos endpoints llaman a la misma lógica principal, ya que el código dentro
+    // maneja si 'id' viene de la URL o del Body.
+    await handlePutRequest(req, res);
 });
 
 /**
- * Función centralizada para manejar la lógica de PUT/PATCH (Actualización).
- * Se utiliza para evitar duplicar el código del endpoint 3.
- */
+ * Función centralizada para manejar la lógica de PUT/PATCH (Actualización).
+ * Se utiliza para evitar duplicar el código del endpoint 3.
+ */
 async function handlePutRequest(req, res) {
     // 1. Autenticación
     const session_token = req.headers['session-token']; 
     const appToken = req.headers['app-token'];
-    // El ID puede estar en req.params si se usó la ruta 3a, o ser undefined si se usó la 3b.
+    // El ID puede estar en req.params si se usó la ruta 3a, o ser undefined si se usó la 3b.
     const { id: idInUrl } = req.params; 
     const inputData = req.body.input;
 
@@ -293,6 +311,118 @@ async function handlePutRequest(req, res) {
     const statusCode = hasFailures ? 207 : 200;
 
     res.status(statusCode).json(finalResults);
+}
+
+
+// ------------------------------------------------------------------
+// 🎯 ENDPOINT 4: DELETE /apirest.php/:itemtype/:id? (ELIMINACIÓN)
+// ------------------------------------------------------------------
+
+// 4a. ELIMINACIÓN INDIVIDUAL (ID en URL)
+app.delete('/apirest.php/:itemtype/:id', async (req, res) => {
+    await handleDeleteRequest(req, res);
+});
+
+// 4b. ELIMINACIÓN BULK (ID(s) en Body JSON)
+app.delete('/apirest.php/:itemtype', async (req, res) => {
+    await handleDeleteRequest(req, res);
+});
+
+/**
+ * Función centralizada para manejar la lógica de DELETE (Eliminación).
+ */
+async function handleDeleteRequest(req, res) {
+    // 1. Autenticación y Extracción de Parámetros
+    const session_token = req.headers['session-token']; 
+    const appToken = req.headers['app-token'];
+    
+    // Parámetros de la URL/Query
+    const { id: idInUrl } = req.params;  // ID si viene en la URL
+    // Se usa 'true' si force_purge=true está en la URL Query String
+    const forcePurgeQuery = req.query.force_purge === 'true'; 
+
+    // Parámetros del Body (payload)
+    const { input: inputData, force_purge: forcePurgeBody } = req.body;
+    
+    // Prioridad: Body > Query
+    const forcePurge = forcePurgeBody || forcePurgeQuery || false;
+    
+    if (!session_token || !appToken) { 
+        return res.status(401).json({ error: "UNAUTHORIZED: Missing required tokens" });
+    }
+
+    const finalResults = [];
+    let isSingleDeletion = false;
+
+    try {
+        // --- CASO A: Eliminación Individual (ID en URL o en input simple del Body) ---
+        // inputData simple: {"input": {"id": 11}}
+        if (idInUrl || (inputData && !Array.isArray(inputData) && inputData.id)) {
+            isSingleDeletion = true;
+            const idToDelete = idInUrl || inputData.id;
+
+            if (!idToDelete) {
+                return res.status(400).json({ error: "Bad Request: Missing 'id' in URL or payload." });
+            }
+
+            const wasDeleted = await deleteComputerById(idToDelete, forcePurge);
+            
+            if (wasDeleted) {
+                // Éxito en eliminación individual: 204 No Content
+                return res.status(204).send();
+            } else {
+                // Fallo (No encontrado), devolvemos el array con el mensaje de error.
+                finalResults.push({ [idToDelete]: false, message: "Item not found" });
+            }
+
+
+        } else if (inputData && Array.isArray(inputData)) {
+            // --- CASO B: Eliminación Múltiple (Array de IDs en el Body) ---
+            if (idInUrl) {
+                return res.status(400).json({ error: "Bad Request: Cannot provide 'id' in URL for multiple deletions." });
+            }
+            
+            const deletePromises = inputData.map(item => {
+                const idToDelete = item.id;
+                if (!idToDelete) {
+                    return Promise.resolve({ [false]: false, message: "Missing ID in array element" });
+                }
+                
+                return deleteComputerById(idToDelete, forcePurge)
+                    .then(wasDeleted => {
+                        return { [idToDelete]: wasDeleted, message: wasDeleted ? "" : "Item not found" }; 
+                    })
+                    .catch(error => {
+                        console.error(`Error DB en ID ${idToDelete}:`, error.message);
+                        return { [idToDelete]: false, message: `Database Error: ${error.message}` };
+                    });
+            });
+
+            const results = await Promise.all(deletePromises);
+            finalResults.push(...results);
+        } else {
+            return res.status(400).json({ error: "Bad Request: Missing ID in URL or 'input' payload." });
+        }
+
+    } catch (error) {
+        console.error("Error inesperado en el procesamiento de DELETE:", error.message);
+        return res.status(500).json({ error: 'Internal Server Error', message: error.message });
+    }
+
+    // --- RESPUESTAS (Solo si no se devolvió 204) ---
+    
+    // Si la eliminación individual falló (no existe), finalResults tiene un resultado.
+    if (isSingleDeletion && finalResults.length > 0) {
+        // En caso de fallo individual, devolvemos 200 o 207 con el resultado.
+        const statusCode = finalResults.some(result => !Object.values(result)[0]) ? 207 : 200;
+        return res.status(statusCode).json(finalResults);
+    }
+    
+    // Si fue múltiple:
+    const hasFailures = finalResults.some(result => !Object.values(result)[0]);
+    const statusCode = hasFailures ? 207 : 200; // 207 si hay fallos, 200 si todo OK
+
+    res.status(statusCode).json(finalResults);
 }
 
 
