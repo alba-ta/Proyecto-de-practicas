@@ -1,0 +1,402 @@
+import express from 'express';
+import mysql from 'mysql2/promise';
+import dotenv from 'dotenv';
+
+dotenv.config();
+
+const app = express();
+const PORT = process.env.API_PORT || 3000;
+
+app.use(express.json());
+
+// ------------------------------------------------------------------
+// --- CONFIGURACIÓN DE CONEXIÓN A LA BASE DE DATOS (Pool) ---
+// ------------------------------------------------------------------
+const pool = mysql.createConnection({
+    host: 'localhost',
+    user: 'root',
+    password: '1234',
+    database: 'glpi',
+    port: 3306
+});
+
+
+// ------------------------------------------------------------------
+// --- FUNCIONES DE LÓGICA DE BASE DE DATOS (CRUD) TOTALMENTE GENÉRICAS ---
+// ------------------------------------------------------------------
+
+/**
+ * LÓGICA DE CREACIÓN TOTALMENTE GENÉRICA: Inserta campos dinámicos en cualquier tabla.
+ */
+function insertItem(itemtype, item) {
+    // 1. Extraer los nombres de las columnas (keys) y sus valores
+    const columns = Object.keys(item).join(', ');
+    const values = Object.values(item);
+    // 2. Crear placeholders dinámicos (?, ?, ?)
+    const placeholders = values.map(() => '?').join(', ');
+
+    return pool.then(connection => {
+        const query = `INSERT INTO ${itemtype} (${columns}) VALUES (${placeholders})`;
+        
+        return connection.execute(query, values);
+    })
+    .then(([result]) => result.insertId);
+}
+
+/**
+ * LÓGICA DE ACTUALIZACIÓN TOTALMENTE GENÉRICA: Actualiza campos dinámicos en cualquier tabla.
+ */
+async function updateItem(itemtype, id, input) {
+    const connection = await pool;
+
+    // 1. Crear la lista SET dinámica (ej: name = ?, otherserial = ?, ...)
+    const setClauses = [];
+    const values = [];
+
+    // Ignoramos la clave 'id'
+    for (const key in input) {
+        if (key !== 'id') {
+            setClauses.push(`${key} = ?`);
+            values.push(input[key]);
+        }
+    }
+    
+    if (setClauses.length === 0) { return false; }
+
+    // 2. Añadir el ID al final del array de valores para el WHERE
+    values.push(id);
+
+    try {
+        const query = `UPDATE ${itemtype} SET ${setClauses.join(', ')} WHERE id = ?`;
+        
+        const [result] = await connection.execute(query, values);
+        return result.affectedRows > 0;
+    } catch (error) {
+        throw error;
+    }
+}
+
+/**
+ * LÓGICA DE ELIMINACIÓN GENÉRICA
+ */
+async function deleteItem(itemtype, id) {
+    const connection = await pool;
+    try {
+        const [result] = await connection.execute(
+            `DELETE FROM ${itemtype} WHERE id = ?`,
+            [id]
+        );
+        return result.affectedRows > 0;
+    } catch (error) {
+        throw error;
+    }
+}
+
+// ------------------------------------------------------------------
+// --- FUNCIONES CENTRALIZADAS DE REQUEST (PUT/DELETE) ---
+// ------------------------------------------------------------------
+
+async function handlePutRequest(req, res) {
+    const session_token = req.headers['session-token']; 
+    const appToken = req.headers['app-token'];
+    const { id: idInUrl, itemtype } = req.params; 
+    const inputData = req.body.input;
+
+    if (!session_token || !appToken) { 
+        return res.status(401).json({ error: "UNAUTHORIZED: Missing required tokens" });
+    }
+
+    if (!inputData) {
+        return res.status(400).json({ error: "Bad Request: Missing 'input' payload" });
+    }
+
+    const finalResults = [];
+
+    try {
+        // Lógica de Actualización Individual (ID en URL o en payload simple)
+        if (!Array.isArray(inputData)) {
+            const idToUpdate = idInUrl || inputData.id;
+
+            if (!idToUpdate) {
+                return res.status(400).json({ error: "Bad Request: Missing 'id' in URL or payload." });
+            }
+
+            // Llama a la función GENÉRICA DE ACTUALIZACIÓN DINÁMICA
+            const wasUpdated = await updateItem(itemtype, idToUpdate, inputData);
+            finalResults.push({ [idToUpdate]: wasUpdated, message: wasUpdated ? "" : "Item not found" });
+
+        } else {
+            // Lógica de Actualización Múltiple (Array en payload)
+            if (idInUrl) {
+                return res.status(400).json({ error: "Bad Request: Cannot provide 'id' in URL for multiple updates." });
+            }
+
+            const updatePromises = inputData.map(item => {
+                const idToUpdate = item.id;
+                if (!idToUpdate) {
+                     return Promise.resolve({ [false]: false, message: "Missing ID in array element" });
+                }
+                
+                // Llama a la función GENÉRICA DE ACTUALIZACIÓN DINÁMICA
+                return updateItem(itemtype, idToUpdate, item)
+                    .then(wasUpdated => {
+                         return { [idToUpdate]: wasUpdated, message: wasUpdated ? "" : "Item not found" }; 
+                    })
+                    .catch(error => {
+                        console.error(`Error DB en ID ${idToUpdate}:`, error.message);
+                        return { [idToUpdate]: false, message: `Database Error: ${error.message}` };
+                    });
+            });
+
+            const results = await Promise.all(updatePromises);
+            finalResults.push(...results);
+        }
+
+    } catch (error) {
+        console.error("Error inesperado en el procesamiento de PUT:", error.message);
+        return res.status(500).json({ error: 'Internal Server Error', message: error.message });
+    }
+
+    const hasFailures = finalResults.some(result => Object.values(result).includes(false));
+    const statusCode = hasFailures ? 207 : 200;
+
+    res.status(statusCode).json(finalResults);
+}
+
+async function handleDeleteRequest(req, res) {
+    const session_token = req.headers['session-token']; 
+    const appToken = req.headers['app-token'];
+    
+    // Obtenemos el tipo de ítem de los parámetros
+    const { id: idInUrl, itemtype } = req.params; 
+    const forcePurgeQuery = req.query.force_purge === 'true'; 
+
+    const { input: inputData, force_purge: forcePurgeBody } = req.body;
+    
+    const forcePurge = forcePurgeBody || forcePurgeQuery || false;
+    
+    if (!session_token || !appToken) { 
+        return res.status(401).json({ error: "UNAUTHORIZED: Missing required tokens" });
+    }
+
+    const finalResults = [];
+    let isSingleDeletion = false;
+
+    try {
+        if (idInUrl || (inputData && !Array.isArray(inputData) && inputData.id)) {
+            isSingleDeletion = true;
+            const idToDelete = idInUrl || inputData.id;
+
+            if (!idToDelete) {
+                return res.status(400).json({ error: "Bad Request: Missing 'id' in URL or payload." });
+            }
+
+            // Llama a la función GENÉRICA DE ELIMINACIÓN
+            const wasDeleted = await deleteItem(itemtype, idToDelete);
+            
+            if (wasDeleted) {
+                return res.status(204).send();
+            } else {
+                finalResults.push({ [idToDelete]: false, message: "Item not found" });
+            }
+
+        } else if (inputData && Array.isArray(inputData)) {
+            if (idInUrl) {
+                return res.status(400).json({ error: "Bad Request: Cannot provide 'id' in URL for multiple deletions." });
+            }
+            
+            const deletePromises = inputData.map(item => {
+                const idToDelete = item.id;
+                if (!idToDelete) {
+                    return Promise.resolve({ [false]: false, message: "Missing ID in array element" });
+                }
+                
+                // Llama a la función GENÉRICA DE ELIMINACIÓN
+                return deleteItem(itemtype, idToDelete)
+                    .then(wasDeleted => {
+                        return { [idToDelete]: wasDeleted, message: wasDeleted ? "" : "Item not found" }; 
+                    })
+                    .catch(error => {
+                        console.error(`Error DB en ID ${idToDelete}:`, error.message);
+                        return { [idToDelete]: false, message: `Database Error: ${error.message}` };
+                    });
+            });
+
+            const results = await Promise.all(deletePromises);
+            finalResults.push(...results);
+        } else {
+            return res.status(400).json({ error: "Bad Request: Missing ID in URL or 'input' payload." });
+        }
+
+    } catch (error) {
+        console.error("Error inesperado en el procesamiento de DELETE:", error.message);
+        return res.status(500).json({ error: 'Internal Server Error', message: error.message });
+    }
+
+    if (isSingleDeletion && finalResults.length > 0) {
+        const statusCode = finalResults.some(result => !Object.values(result)[0]) ? 207 : 200;
+        return res.status(statusCode).json(finalResults);
+    }
+    
+    const hasFailures = finalResults.some(result => !Object.values(result)[0]);
+    const statusCode = hasFailures ? 207 : 200; 
+
+    res.status(statusCode).json(finalResults);
+}
+
+
+// ------------------------------------------------------------------
+// 🎯 ENDPOINT 1: POST /apirest.php/:itemtype (CREACIÓN)
+// ------------------------------------------------------------------
+app.post('/apirest.php/:itemtype', (req, res) => {
+    const session_token = req.headers['session-token']; 
+    const appToken = req.headers['app-token'];
+    const { itemtype } = req.params; 
+
+    if (!session_token || !appToken) { 
+        return res.status(401).json({ error: "Missing required tokens" });
+    }
+
+    const inputData = req.body.input;
+
+    if (!inputData) {
+        return res.status(400).json({ error: "Missing 'input' data in body" });
+    }
+
+    if (!Array.isArray(inputData)) {
+        // Llama a la función de inserción GENÉRICA Y DINÁMICA
+        insertItem(itemtype, inputData)
+            .then(newId => {
+                res.status(201).set({
+                    'Location': `http://path/to/glpi/api/${itemtype}/${newId}`
+                }).json({ id: newId });
+            })
+            .catch(error => {
+                console.error(`Error al insertar un registro en ${itemtype}:`, error.message);
+                res.status(409).json({ error: 'Conflict or Database Error', message: error.message });
+            });
+        return;
+    }
+
+    let results = [];
+    let linkHeader = [];
+    
+    inputData.reduce((promiseChain, item) => {
+        return promiseChain.then(() => {
+            // Llama a la función de inserción GENÉRICA Y DINÁMICA
+            return insertItem(itemtype, item)
+                .then(newId => {
+                    results.push({ id: newId, message: "" });
+                    linkHeader.push(`http://path/to/glpi/api/${itemtype}/${newId}`);
+                })
+                .catch(error => {
+                    // Usamos el id o 'false' si no hay id
+                    const itemId = item.id || false; 
+                    console.error(`Error al insertar registro en ${itemtype}:`, error.message);
+                    results.push({ id: itemId, message: error.message });
+                });
+        });
+    }, Promise.resolve())
+    .then(() => {
+        res.status(207).set({
+            'Link': linkHeader.join(',')
+        }).json(results);
+    })
+    .catch(error => {
+        console.error("Error inesperado en el procesamiento del array:", error.message);
+        res.status(500).json({ error: 'Internal Server Error' });
+    });
+});
+
+// ------------------------------------------------------------------
+// 🎯 ENDPOINT 2: POST /apirest.php/applyMassiveAction/:itemtype/:action (ACCIÓN MASIVA)
+// ------------------------------------------------------------------
+app.post('/apirest.php/applyMassiveAction/:itemtype/:action', async (req, res) => {
+    const session_token = req.headers['session-token']; 
+    const appToken = req.headers['app-token'];
+    const { itemtype, action } = req.params; 
+    const { ids, input } = req.body; 
+
+    if (!session_token || !appToken) { 
+        return res.status(401).json({ error: "UNAUTHORIZED: Missing required tokens" });
+    }
+
+    if (!ids || !Array.isArray(ids) || !input) {
+        return res.status(400).json({ error: "Bad Request: Missing 'ids' array or 'input' payload" });
+    }
+
+    let ok = 0;
+    let ko = 0;
+    let noright = 0;
+    let messages = [];
+
+    try {
+        const updatePromises = ids.map(id => {
+            // Llama a la función GENÉRICA DE ACTUALIZACIÓN DINÁMICA
+            return updateItem(itemtype, id, input)
+                .then(wasUpdated => {
+                    if (wasUpdated) {
+                        ok++;
+                    } else {
+                        ko++;
+                        messages.push({ message: `ID ${id} no encontrado en ${itemtype}.`, id: id });
+                    }
+                })
+                .catch(error => {
+                    console.error(`Error procesando ID ${id} en ${itemtype}:`, error.message);
+                    ko++;
+                    messages.push({ message: `Fallo de DB para ID ${id}: ${error.message}`, id: id });
+                });
+        });
+
+        await Promise.all(updatePromises);
+
+    } catch (error) {
+        console.error("Error inesperado durante Promise.all:", error.message);
+        return res.status(500).json({ error: 'Internal Server Error' });
+    }
+    
+    const statusCode = ko > 0 ? 207 : 200;
+
+    res.status(statusCode).json({
+        ok: ok,
+        ko: ko,
+        noright: noright,
+        messages: messages.filter(msg => msg.id)
+    });
+});
+
+
+// ------------------------------------------------------------------
+// 🎯 ENDPOINT 3: PUT/PATCH (ACTUALIZACIÓN)
+// ------------------------------------------------------------------
+
+app.put('/apirest.php/:itemtype/:id', async (req, res) => {
+    await handlePutRequest(req, res);
+});
+
+app.put('/apirest.php/:itemtype', async (req, res) => {
+    await handlePutRequest(req, res);
+});
+
+
+// ------------------------------------------------------------------
+// 🎯 ENDPOINT 4: DELETE /apirest.php/:itemtype/:id? (ELIMINACIÓN)
+// ------------------------------------------------------------------
+
+app.delete('/apirest.php/:itemtype/:id', async (req, res) => {
+    await handleDeleteRequest(req, res);
+});
+
+app.delete('/apirest.php/:itemtype', async (req, res) => {
+    await handleDeleteRequest(req, res);
+});
+
+
+// ------------------------------------------------------------------
+// --- INICIALIZACIÓN DEL SERVIDOR ---
+// ------------------------------------------------------------------
+app.listen(PORT, () => {
+    console.log(`🚀 Servidor de API simple corriendo en http://localhost:${PORT}`);
+    console.log(`Base de datos conectada a: ${process.env.DB_DATABASE || 'glpi (hardcodeado)'}`);
+});
